@@ -1,15 +1,20 @@
 # 1. Load required libraries
-if (!require("readxl")) install.packages("readxl")
-if (!require("writexl")) install.packages("writexl")
-if (!require("tidyverse")) install.packages("tidyverse")
+options(repos = c(CRAN = "https://cloud.r-project.org"))
 
-library(readxl)
-library(writexl)
-library(tidyverse)
+load_or_install <- function(package_name) {
+  if (!requireNamespace(package_name, quietly = TRUE)) {
+    install.packages(package_name)
+  }
+  library(package_name, character.only = TRUE)
+}
+
+load_or_install("readxl")
+load_or_install("writexl")
+load_or_install("tidyverse")
 
 # --- CONFIGURATION ---
 file_path <- "Composite_fragility_index_Tutti_Anni.xlsx"
-sheets_to_read <- c("2018", "2019", "2021", "2022")
+sheets_to_read <- c("2018", "2019", "2021")
 
 # 2. Load and deep-clean function
 load_clean_data <- function(s) {
@@ -26,6 +31,7 @@ load_clean_data <- function(s) {
   df_clean <- df %>%
     # Remove fully empty rows or rows without municipality code
     filter(!is.na(PRO_COM), !is.na(Territory)) %>%
+    mutate(MFI_Dec = as.integer(readr::parse_number(MFI_Dec))) %>%
     # Convert text to numbers (handling Italian commas and spaces)
     mutate(across(4:15, ~ as.numeric(gsub(",", ".", gsub("\\s+", "", .x))))) %>%
     mutate(Year = as.character(s)) %>%
@@ -51,7 +57,10 @@ data_transformed <- data_all %>%
 check_2018 <- data_transformed %>% filter(Year == "2018")
 if (nrow(check_2018) == 0) stop("Error: Unable to find 2018 data for reference calculation!")
 
-ref_2018 <- check_2018 %>%
+# NOTE: The official methodology uses Italy-wide 2018 indicator values as Ref_xj.
+# In this reconstruction, Ref_xj is approximated with the 2018 municipal mean because
+# the national reference table is not available in the workbook.
+ref_2018_proxy <- check_2018 %>%
   summarise(across(all_of(all_indicators), ~ mean(.x, na.rm = TRUE)))
 
 limits <- data_transformed %>%
@@ -63,7 +72,7 @@ limits <- data_transformed %>%
 # 6. AMPI normalization (transform to base-100 indices)
 data_norm <- data_transformed
 for(i in all_indicators) {
-  ref <- as.numeric(ref_2018[[i]])
+  ref <- as.numeric(ref_2018_proxy[[i]])
   mi <- as.numeric(limits[[paste0(i, "_min")]])
   ma <- as.numeric(limits[[paste0(i, "_max")]])
   
@@ -88,18 +97,71 @@ calc_ampi_plus <- function(row_vals) {
   return(m + (s * (s/m)))
 }
 
+build_decile_thresholds <- function(ifc_values) {
+  clean_values <- ifc_values[!is.na(ifc_values)]
+  if(length(clean_values) == 0) stop("Error: Unable to derive 2018 decile thresholds without valid IFC values!")
+
+  as.numeric(quantile(
+    clean_values,
+    probs = seq(0.1, 1, 0.1),
+    na.rm = TRUE,
+    names = FALSE,
+    type = 7
+  ))
+}
+
+assign_deciles_from_thresholds <- function(ifc_values, upper_bounds) {
+  if(length(upper_bounds) != 10) stop("Error: Expected 10 upper bounds for decile assignment!")
+
+  assigned_deciles <- rep(NA_integer_, length(ifc_values))
+  non_missing <- !is.na(ifc_values)
+  assigned_deciles[non_missing] <- findInterval(ifc_values[non_missing], upper_bounds[1:9], left.open = TRUE) + 1L
+
+  pmin(assigned_deciles, 10L)
+}
+
 # 8. Final index calculation and table reshaping
-final_result <- data_norm %>%
+ifc_results <- data_norm %>%
   rowwise() %>%
   mutate(IFC = calc_ampi_plus(c_across(all_of(all_indicators)))) %>%
   ungroup() %>%
-  select(PRO_COM, Territory, Year, IFC) %>%
+  select(PRO_COM, Territory, Year, MFI_Dec, IFC)
+
+decile_thresholds <- ifc_results %>%
+  filter(Year == "2018") %>%
+  pull(IFC) %>%
+  build_decile_thresholds()
+
+final_result <- ifc_results %>%
+  mutate(
+    Calc_Decile = assign_deciles_from_thresholds(IFC, decile_thresholds),
+    Decile_Match = if_else(!is.na(Calc_Decile) & !is.na(MFI_Dec), Calc_Decile == MFI_Dec, NA)
+  ) %>%
+  filter(Year != "2018") %>%
   mutate(IFC = round(IFC, 2)) %>%
-  # Transform from vertical (Year) to horizontal (columns 2018, 2019...)
+  # Transform from vertical (Year) to horizontal with year-specific IFC and decile checks
   pivot_wider(
-    names_from = Year, 
-    values_from = IFC,
-    values_fn = list(IFC = ~ mean(.x, na.rm = TRUE)) # Anti-duplicate safeguard
+    names_from = Year,
+    values_from = c(IFC, Calc_Decile, MFI_Dec, Decile_Match),
+    names_glue = "{.value}_{Year}",
+    values_fn = list(
+      IFC = ~ mean(.x, na.rm = TRUE),
+      Calc_Decile = dplyr::first,
+      MFI_Dec = dplyr::first,
+      Decile_Match = dplyr::first
+    )
+  ) %>%
+  select(
+    PRO_COM,
+    Territory,
+    IFC_2019,
+    Calc_Decile_2019,
+    MFI_Dec_2019,
+    Decile_Match_2019,
+    IFC_2021,
+    Calc_Decile_2021,
+    MFI_Dec_2021,
+    Decile_Match_2021
   ) %>%
   # ORDERING: From the smallest municipality code to the largest
   arrange(as.numeric(PRO_COM))
