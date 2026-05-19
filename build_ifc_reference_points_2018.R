@@ -21,7 +21,7 @@ invisible(lapply(need, function(p) {
 # ------------------------- CONFIG --------------------------
 ifc_workbook_path <- "Composite_fragility_index_Tutti_Anni.xlsx"
 ifc_sheet <- "2018"
-indicator_cols <- 3:14                 # 12 IFC indicators in the workbook
+indicator_cols <- 4:15                 # 12 IFC indicators; columns 1-2 are code/name and column 3 is MFI decile
 indicator_names <- paste0("I", 1:12)
 
 population_2018_csv <- "Resident population by age groups (five-year) and gender - municipalities (IT1,DF_DCSS_POP_DEMCITMIG_TV_1,1.0).csv"
@@ -118,7 +118,9 @@ pop_weights <- function(path, year) {
 # ------------------------- READ INPUTS ---------------------
 # IFC target municipalities and municipal indicator values
 ifc_raw <- readxl::read_excel(ifc_workbook_path, sheet = ifc_sheet, skip = 2, col_names = FALSE, col_types = "text")
-if (ncol(ifc_raw) < max(indicator_cols)) stop("IFC workbook does not contain the expected 12 indicator columns.")
+if (ncol(ifc_raw) < max(indicator_cols)) stop("IFC workbook does not contain the expected 12 indicator columns. Expected indicators in columns 4:15 after code, territory and MFI decile.")
+# Sanity check: column 3 is the official MFI decile, not an elementary indicator.
+# Using 3:14 would shift all indicators and make the reference row wrong.
 
 ifc_target <- ifc_raw %>%
   transmute(PRO_COM = str_pad(as.character(...1), 6, pad = "0"), Territory_ifc = as.character(...2)) %>%
@@ -183,20 +185,43 @@ reference_row <- df %>%
   summarise(
     reference_area = "Italy",
     reference_year = 2018,
-    I1_ref = wmean(I1, area_total),
-    I2_ref = wmean(I2, area_total),
-    I3_ref = mean_safe(I3),
-    I4_ref = wmean(I4, pop_total),
-    I5_ref = wmean(I5, pop_total),
-    I6_ref_approx = wmean(I6, area_total),
-    I7_ref = wmean(I7, pop_20_64),
-    I8_ref = wmean(I8, pop_25_64),
-    I9_ref = wmean(I9, pop_20_64),
-    I10_ref = wmean(I10, pop_2011),
-    I11_ref_exact = per1000(local_units_2018, pop_total),
+
+    # Actual IFC workbook order:
+    # I1 cars, I2 waste, I3 protected areas, I4 landslides, I5 soil consumption,
+    # I6 accessibility, I7 dependency, I8 low education, I9 employment,
+    # I10 net migration, I11 local-unit density ventile, I12 low-productivity ventile.
+    I1_ref = wmean(I1, pop_total),             # high-emission motorisation rate
+    I2_ref = wmean(I2, pop_total),             # undifferentiated waste per inhabitant
+    I3_ref_approx = wmean(I3, area_total),     # protected natural areas, approximate
+    I4_ref = wmean(I4, area_total),            # landslide-risk area
+    I5_ref = wmean(I5, area_total),            # land consumption
+    I6_ref = mean_safe(I6),                    # accessibility, no additive denominator
+    I7_ref = wmean(I7, pop_20_64),             # dependency index; keep same denominator choice as previous script
+    I8_ref = wmean(I8, pop_25_64),             # low education, ages 25-64
+    I9_ref = wmean(I9, pop_20_64),             # employment rate, ages 20-64
+    I10_ref = wmean(I10, pop_2011),            # net migration / 2011 population
+
+    # Unit-consistent I11 reference:
+    # Municipal Ind11 is on a 1-20 ventile/class scale, but we can reconstruct
+    # the raw local-unit density from ASIA-UL and population. Therefore we:
+    #   1) compute Italy raw density from totals;
+    #   2) locate that raw Italy value inside the 2018 municipal raw-density distribution;
+    #   3) use the corresponding ventile class as the reference.
+    I11_ref = {
+      raw_m <- 1000 * local_units_2018 / pop_total
+      raw_it <- per1000(local_units_2018, pop_total)
+      p_it <- mean(raw_m <= raw_it, na.rm = TRUE)
+      max(1, min(20, ceiling(20 * p_it)))
+    },
+    I11_ref_raw_density_info_only = per1000(local_units_2018, pop_total),
+
+    # Approximation only: municipal Ind12 is also a ventile/class, not raw low-productivity percentage.
     I12_ref_rough_employment_weighted_ventile = wmean(I12, persons_employed_lu_2018),
-    note_I3 = "Simple municipal mean; accessibility has no natural additive denominator.",
-    note_I6 = "Approximation: area-weighted municipal value; official numerator is GIS protected-area overlay and may use different surfaces.",
+
+    note_order = "Workbook order: I1 cars, I2 waste, I3 protected, I4 landslides, I5 soil, I6 accessibility, I7 dependency, I8 education, I9 employment, I10 migration, I11 LU ventile, I12 low-productivity ventile.",
+    note_I3 = "Approximation: area-weighted municipal protected-area value; official numerator is GIS protected-area overlay and may use different surfaces.",
+    note_I6 = "Simple municipal mean; accessibility has no natural additive denominator.",
+    note_I11 = "Municipal Ind11 is a ventile/class (1-20). The script computes Italy raw LU density from totals, then converts it to the corresponding 2018 municipal ventile class; raw density is reported only as info.",
     note_I12 = "Rough approximation: employment-weighted mean of municipal ventiles/classes; exact raw value needs Frame-SBS Territorial low-productivity numerator."
   )
 
