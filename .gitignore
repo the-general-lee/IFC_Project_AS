@@ -1,5 +1,34 @@
+## R session files
 .Rproj.user
 .Rhistory
 .RData
 .Ruserdata
 .Rproj
+
+## Temporary / system
+*.log
+*.aux
+*.toc
+*.out
+*.synctex.gz
+.DS_Store
+Thumbs.db
+
+## Outputs that should be regenerated, not versioned
+outputs/**/temp/
+
+## Very large processed datasets — re-create with scripts if needed
+data/processed/grins_v3/comunale_v3.csv
+
+## ISTAT shapefile (>100 MB, exceeds GitHub single-file limit).
+## Download manually from ISTAT and place in data/raw/istat/shapefile/.
+## See README for the download link.
+data/raw/istat/shapefile/
+
+## LaTeX build artefacts
+reports/**/*.pdf
+reports/**/*.aux
+reports/**/*.toc
+reports/**/*.log
+reports/**/*.out
+reports/**/*.synctex.gz
