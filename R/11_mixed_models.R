@@ -2,15 +2,23 @@
 # LINEAR MIXED MODELS — geographic and taxonomic hierarchies
 # ----------------------------------------------------------------
 # Question: does explicitly modelling region/province/GRINS hierarchy
-# as a random effect add information beyond what the LASSO benchmark
-# (10_final_benchmark.R) already captures with its fixed effects?
+# as a random effect add information beyond what the fixed-effect
+# benchmark already captures?
 #
-# Three model variants are fit on the same feature matrix that the
-# LASSO benchmark selected, so the comparison is "apples to apples":
+# Fixed-effects source (chosen in this order, first one available):
+#   1) outputs/parsimonious_model/selected_parsimonious_variables.txt
+#      -> the 25-covariate set selected by R/14_parsimonious_model.R
+#         (VIF iterative pruning + top-N ranking + significance filter)
+#   2) outputs/final_benchmark/final_coefficients_standardised.csv
+#      -> the 191 LASSO-selected covariates of R/10_final_benchmark.R
 #
-#   M_geo        : IFC ~ X + (1 | region)
-#   M_geo_nested : IFC ~ X + (1 | region/province)
-#   M_tax        : IFC ~ X + (1 | GRINS_macroclass)
+# Four random-effects variants are fit on the same fixed-effects
+# matrix, so the comparison is "apples to apples":
+#
+#   M_geo           : IFC ~ X + (1 | region)
+#   M_geo_nested    : IFC ~ X + (1 | region / province)
+#   M_tax           : IFC ~ X + (1 | GRINS_macroclass)
+#   M_geo_plus_tax  : IFC ~ X + (1 | region) + (1 | GRINS_macroclass)
 #
 # Reported per model:
 #   - R^2 marginal  (fixed effects only)
@@ -30,8 +38,11 @@ set.seed(2026)
 ifc_file       <- "data/raw/ifc/final_analysis_sorted.xlsx"
 grins_file     <- "data/processed/grins_v3/comunale_v3.rds"
 tassonomia_file<- "data/raw/grins/tassonomia_grins.xlsx"
-benchmark_coef <- "outputs/final_benchmark/final_coefficients_standardised.csv"
-out_dir        <- "outputs/mixed_models"
+benchmark_coef        <- "outputs/final_benchmark/final_coefficients_standardised.csv"
+parsimonious_selected <- "outputs/parsimonious_model/selected_parsimonious_variables.txt"
+parsimonious_ranking  <- "outputs/parsimonious_model/vif_clean_ranking.csv"
+n_parsimonious        <- 25         # used only as a fallback if the selected file is missing
+out_dir               <- "outputs/mixed_models"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 # OneDrive placeholder workaround
@@ -141,10 +152,22 @@ cat("Feature matrix:", dim(X_fe), "\n")
 # that LASSO already kept, we isolate the contribution of the random
 # effects. This is the standard "post-selection" use of LMM.
 # ================================================================
-sel_df <- read.csv(benchmark_coef, stringsAsFactors = FALSE)
-selected <- sel_df$variable
-selected <- intersect(selected, names(X_fe))
-cat("Predictors carried over from LASSO benchmark:", length(selected), "\n")
+# Choose the fixed-effects set with the priority described in the header.
+if (file.exists(parsimonious_selected)) {
+  selected <- readLines(parsimonious_selected)
+  selected <- intersect(selected, names(X_fe))
+  cat(sprintf("Predictors loaded from FINAL parsimonious set: %d\n", length(selected)))
+} else if (file.exists(parsimonious_ranking)) {
+  ranking <- read.csv(parsimonious_ranking, stringsAsFactors = FALSE)
+  selected <- intersect(ranking$variable[seq_len(n_parsimonious)], names(X_fe))
+  cat(sprintf("FINAL list missing; using top %d of the VIF-clean ranking: %d\n",
+              n_parsimonious, length(selected)))
+} else {
+  sel_df   <- read.csv(benchmark_coef, stringsAsFactors = FALSE)
+  selected <- intersect(sel_df$variable, names(X_fe))
+  cat("Parsimonious files missing; falling back to LASSO benchmark:",
+      length(selected), "predictors\n")
+}
 
 X_sel <- X_fe[, selected, drop = FALSE]
 # Standardise predictors so that lmer coefficients are comparable

@@ -1,0 +1,429 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{amsmath, amssymb}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{natbib}
+
+\geometry{margin=2.5cm}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+\title{From 191 to 25 covariates: a parsimonious linear model for IFC\\[0.3em]
+  \large Multicollinearity pruning, significance filtering, and the
+  geographic-hierarchy recovery}
+\author{Applied Statistics Project --- Extension Report}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This extension report documents an iteration of the IFC linear
+benchmark made in response to instructor feedback. The original LASSO
+benchmark (191 covariates, R²~$=$~0.825) was considered too dense to
+discuss substantively in a poster setting. We therefore derived a
+\emph{parsimonious} model in two steps. First, we eliminated
+multicollinearity by iteratively dropping the covariate with the
+highest Variance Inflation Factor until no VIF exceeded~10 (191 $\to$
+157 covariates). Second, we ranked the survivors by standardised
+effect, kept the top~25, and applied a post-hoc significance filter
+that replaces any non-significant predictor with the next candidate
+from the ranking. The resulting 25-covariate model reaches R²~$=$~0.784
+on the same panel-aware test protocol, a cost of $-0.041$~R². The
+linear mixed model with a region/province nested random intercept
+recovers almost all of that loss, reaching R²~$=$~0.822 ($+0.038$ over
+the parsimonious linear model and only $-0.005$ below the
+191-covariate LASSO benchmark). A Moran's~$I$ on the mixed-model
+residuals still detects significant positive spatial autocorrelation
+($I = 0.235$, $p < 0.001$), consistent with what we found for the
+191-covariate model and confirming that the spatial structure is
+robust to the choice of covariate set. The final 25-covariate model
+is dominated by economic indicators (income shares, small-business
+density, productivity) and is readable in full on a single slide or
+poster panel.
+\end{abstract}
+
+\section{Why a parsimonious extension was needed}
+
+The original benchmark of the project~--- a LASSO linear model with
+$\lambda_{\mathrm{1se}}$ on a 326-column feature matrix, evaluated by
+repeated panel-aware cross-validation~--- selected 191 covariates and
+reached an out-of-sample~R² of $0.825 \pm 0.008$. This is excellent
+predictively, but the instructor raised three connected concerns
+during the project review:
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{too many covariates}: 191 is not legible in a poster
+    or in a single presentation slide; 10--20 is the working range
+    the audience can reason about;
+  \item \textbf{multicollinearity not formally checked}: the LASSO
+    benchmark only had a qualitative remark on the
+    PM\textsubscript{10}/PM\textsubscript{2.5} pair; a systematic VIF
+    analysis would tell us how many of the remaining 191 are actually
+    independent informative predictors;
+  \item \textbf{ridge vs lasso}: an Elastic Net comparison across
+    mixing parameters would tell us whether the choice of regulariser
+    is driving the result.
+\end{itemize}
+This report addresses all three concerns by deriving a 25-covariate
+parsimonious linear model and re-running the mixed-model extension on
+it. The numerical comparison with the original 191-covariate run is
+explicit throughout.
+
+\section{Method}
+
+\subsection{Variance Inflation Factor pruning}
+
+For a linear model with $p$ predictors, the Variance Inflation Factor
+of the $j$-th predictor is
+\begin{equation}
+  \mathrm{VIF}_j \;=\; \frac{1}{1 - R^{2}_{j}},
+  \qquad
+  R^{2}_{j} = R^{2}\!\left(X_j \sim X_{-j}\right),
+  \label{eq:vif}
+\end{equation}
+the proportion of variance of $X_j$ that the other predictors already
+explain. VIF~$=$~1 corresponds to perfect independence; conventional
+thresholds flag VIF~$>$~5 as moderate and VIF~$>$~10 as serious
+collinearity in which the coefficient of $X_j$ is unstable.
+
+Starting from the 191 LASSO-selected predictors of the benchmark, we
+iteratively dropped the covariate with the largest VIF and refit. The
+procedure stopped after \textbf{34 iterations}, when the maximum VIF
+fell below 10 (final $\max\mathrm{VIF}~=~9.44$). The worst offenders
+were highly redundant indicators with VIFs above one hundred (e.g.\
+\texttt{mef\_tot\_classi\_amm}, VIF~$=$~159). The complete drop log is
+saved in \verb|outputs/parsimonious_model/vif_drop_log.csv|.
+
+\subsection{Ranking and selection by standardised effect}
+
+On the 157-covariate VIF-clean set we fit one ordinary linear model
+with standardised predictors and ranked them by~$\lvert
+\hat\beta_j \rvert$. Because predictors are standardised, this is the
+expected change in IFC for a one-standard-deviation shift of the
+engineered variable. The top $n_{\text{final}}~=~25$ predictors form
+the initial candidate set.
+
+\subsection{Post-hoc significance filter}
+
+When we refit the model on the top~25, one predictor turned out to be
+non-significant (p~$=$~0.97), even though its $\lvert\hat\beta\rvert$
+made it eligible by the ranking. We therefore added a post-hoc filter
+that drops any non-significant predictor and replaces it with the
+next candidate from the ranking, refits, and repeats until either all
+25 coefficients are significant at the 0.05 level or the candidate
+pool is exhausted. In our run a single replacement was triggered:
+\texttt{composizione\_retribuzione\_importo} (p~$=$~0.97) was replaced
+by \texttt{reddito\_partecipazione} (p~$=$~10\textsuperscript{$-24$}).
+
+\subsection{Mixed-model extension and spatial diagnostic}
+
+We re-ran the mixed-model extension of the previous report
+(\verb|reports/final_benchmark/report.tex|) on the new 25-covariate
+fixed-effects set, with random intercepts on (i)~region,
+(ii)~region/province nested, (iii)~GRINS macroclass and (iv)~region
+plus macroclass crossed. We also recomputed Moran's $I$ on the
+residuals of the best mixed model (region/province nested) using
+the same five-nearest-neighbour weights as before. All other
+hyperparameters are unchanged so that the new numbers are directly
+comparable to those of the previous report.
+
+\subsection{Elastic Net cross-check}
+
+To answer the ``LASSO with ridge penalty'' feedback, we ran Elastic
+Net on the 157 VIF-clean predictors for
+$\alpha \in \{0.10, 0.25, 0.50, 0.75, 1.00\}$. At $\alpha = 0$ the
+penalty would be pure Ridge with no selection; at $\alpha = 1$ pure
+LASSO; intermediate values mix the two~\citep{zouhastie2005}.
+
+\section{Results}
+
+\subsection{Parsimony--accuracy trade-off}
+
+Figure~\ref{fig:tradeoff} shows the trade-off curve from running
+panel-aware cross-validation at different sizes of the top-$n$
+ranking, from 5 to 157 predictors.
+
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=0.85\textwidth]{figures/tradeoff_curve.png}
+  \caption{Out-of-sample R² as a function of the number of covariates
+    retained from the VIF-clean ranking. The dashed line marks the
+    R² of the original 191-covariate LASSO benchmark.}
+  \label{fig:tradeoff}
+\end{figure}
+
+The curve has a clear ``elbow'' between 20 and~25 predictors. Going
+from 15 to 25 adds about $+0.03$~R² (from 0.752 to 0.784); going from
+25 to all~157 adds only another $+0.02$~R² (to 0.799). We therefore
+chose 25 as the parsimonious size: at this point the marginal
+contribution of additional predictors becomes negligible, and the
+list is still short enough to print on a poster.
+
+\subsection{The 25-covariate model}
+
+After the significance filter all 25 coefficients are highly
+significant (p~$<$~10\textsuperscript{$-5$}), and the maximum VIF in
+the final model is~6.44. The standardised coefficients are reported
+in Table~\ref{tab:final25}, sorted by~$\lvert\hat\beta\rvert$.
+
+\begin{table}[h!]
+  \centering
+  \small
+  \begin{tabular}{lcc l}
+    \toprule
+    Variable & $\hat\beta_{\text{std}}$ & sign & substantive reading \\
+    \midrule
+    \texttt{reddito\_26000\_55000}                  & $-0.93$ & --- & mid-income taxpayer mass\\
+    \texttt{numero\_contribuenti}                   & $-0.80$ & --- & taxpayer density\\
+    \texttt{mef\_cls\_0\_10000\_amm}                & $+0.55$ & +++ & low-income taxpayer mass\\
+    \texttt{asia\_ul\_f\_w0\_9}                     & $-0.50$ & --- & small construction businesses\\
+    \texttt{frame\_servizi\_VA\_per\_addetto}       & $-0.46$ & --- & services-sector productivity\\
+    \texttt{asia\_ul\_m\_w0\_9}                     & $-0.45$ & --- & small professional / scientific businesses\\
+    \texttt{reddito\_pensione}                      & $+0.45$ & +++ & pension share of declared income\\
+    \texttt{asia\_add\_c\_w0\_9}                    & $-0.45$ & --- & small manufacturing businesses\\
+    \texttt{frame\_industria\_VA\_per\_addetto}     & $-0.44$ & --- & industry productivity\\
+    \texttt{asia\_ul\_g\_w0\_9}                     & $-0.41$ & --- & small wholesale/retail businesses\\
+    \texttt{frame\_totale\_retribuzione\_su\_VA}    & $-0.41$ & --- & wage share of value added\\
+    \texttt{Superficie\_totale\_Kmq}                & $-0.38$ & --- & municipal area\\
+    \texttt{asia\_add\_c\_w10\_49}                  & $-0.36$ & --- & medium-small manufacturing\\
+    \texttt{asia\_ul\_i\_w0\_9}                     & $-0.31$ & --- & small hospitality businesses\\
+    \texttt{bonus\_trattamento}                     & $-0.30$ & --- & wage support beneficiaries\\
+    \texttt{mef\_cls\_75000\_120000\_freq}          & $-0.29$ & --- & upper-middle income taxpayer share\\
+    \texttt{asia\_add\_s\_w0\_9}                    & $-0.29$ & --- & small other-services businesses\\
+    \texttt{employee\_concentration}                & $-0.28$ & --- & employment concentration index\\
+    \texttt{mef\_cls\_55000\_75000\_freq}           & $-0.28$ & --- & upper-middle income share\\
+    \texttt{asia\_ul\_q\_w0\_9}                     & $-0.22$ & --- & small health/social services\\
+    \texttt{reddito\_partecipazione}                & $-0.21$ & --- & participation income\\
+    \texttt{no2\_media\_valori\_annuali}            & $+0.18$ & +++ & NO\textsubscript{2} annual mean\\
+    \texttt{eta\_uomini}                            & $+0.16$ & +++ & mean age (males)\\
+    \texttt{istr\_occupazione\_tempo\_pieno\_donne} & $+0.15$ & +++ & full-time female public employees\\
+    \texttt{istr\_contrattazione\_integrativa}      & $-0.08$ & --- & supplementary collective bargaining fund\\
+    \bottomrule
+  \end{tabular}
+  \caption{The final 25 covariates after VIF pruning, top-ranking
+    and significance filtering. All coefficients are significant at
+    $p < 10^{-5}$. \emph{Sign} ``$+++$'' = increases fragility,
+    ``$---$'' = reduces fragility.}
+  \label{tab:final25}
+\end{table}
+
+The narrative that emerges is almost purely socio-economic. The
+strongest predictors are the size of the mid-income taxpayer class
+(less fragile) and the size of the low-income taxpayer class (more
+fragile). The next layer is the density of small businesses in
+multiple sectors (manufacturing, construction, retail, services),
+which uniformly point to lower fragility. Productivity in industry
+and services adds to this picture. The post-COVID dummy is no longer
+in the top 25 once the geographic structure is left to the mixed
+model, and PM\textsubscript{10} also drops out: only NO\textsubscript{2}
+and the male mean age survive among the non-economic indicators.
+
+\subsection{Elastic Net cross-check}
+
+Table~\ref{tab:enet} reports the selection size and the
+cross-validated MSE for five values of the mixing parameter~$\alpha$
+on the VIF-clean set.
+
+\begin{table}[h!]
+  \centering
+  \begin{tabular}{cccc}
+    \toprule
+    $\alpha$ & \# selected at $\lambda_{\mathrm{1se}}$ & $\lambda_{\mathrm{1se}}$ & CV MSE \\
+    \midrule
+    0.10 (ridge-leaning) & 122 & 0.108 & 3.469 \\
+    0.25                 & 113 & 0.060 & 3.484 \\
+    0.50                 & 116 & 0.028 & 3.477 \\
+    0.75                 & 97  & 0.028 & 3.509 \\
+    1.00 (pure LASSO)    & 100 & 0.019 & 3.499 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Elastic Net comparison on the 157-covariate VIF-clean set.}
+  \label{tab:enet}
+\end{table}
+
+The CV MSE varies by less than one percent across the entire grid,
+and the selection sizes are bunched between 97 and 122. On a feature
+matrix that has already been pruned of strong collinearity, the
+LASSO/Ridge mix matters very little; LASSO is therefore a reasonable
+choice. Figure~\ref{fig:enet} shows the selection sizes graphically.
+
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=0.65\textwidth]{figures/elastic_net_alpha.png}
+  \caption{Elastic Net selection size at $\lambda_{\mathrm{1se}}$ for
+    varying mixing parameter~$\alpha$. The choice of $\alpha$ does
+    not materially change the selection on the VIF-pruned input.}
+  \label{fig:enet}
+\end{figure}
+
+\subsection{Mixed-model extension on the 25-covariate set}
+
+We re-fitted the four mixed-model variants of the previous report on
+the new 25-covariate fixed-effects set. Table~\ref{tab:lmm25} reports
+the resulting out-of-sample R² and compares them line by line with
+the corresponding numbers from the 191-covariate run.
+
+\begin{table}[h!]
+  \centering
+  \begin{tabular}{lcc c}
+    \toprule
+    Model & R² (191 cov, old) & R² (25 cov, new) & $\Delta$ R² \\
+    \midrule
+    Linear model (no random effect)   & 0.826 & 0.784 & $-0.042$ \\
+    $M_{\mathrm{tax}}$                 & 0.829 & 0.786 & $-0.043$ \\
+    $M_{\mathrm{geo}}$                 & 0.846 & 0.815 & $-0.031$ \\
+    $M_{\mathrm{geo+tax}}$             & 0.846 & 0.816 & $-0.030$ \\
+    $M_{\mathrm{geo,nested}}$          & 0.853 & \textbf{0.822} & $-0.031$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Linear and mixed-model R² with the 191-covariate and the
+    25-covariate fixed-effects sets, evaluated by the same five-fold
+    panel-aware cross-validation.}
+  \label{tab:lmm25}
+\end{table}
+
+Two findings stand out. First, the mixed-model \emph{relative} gain
+over the linear baseline is actually slightly larger with 25
+covariates ($+0.038$, from 0.784 to 0.822) than with 191
+($+0.026$, from 0.826 to 0.853): with fewer fixed effects, more
+residual variance is available for the regional/provincial random
+intercepts to absorb. Second, the gap to the original 191-covariate
+LASSO benchmark almost closes:
+$0.822 - 0.826 = -0.004$. In practical terms, a model with 25
+poster-readable covariates plus a region/province nested random
+intercept performs nearly as well as the 191-covariate benchmark.
+
+\subsection{Spatial diagnostic robustness}
+
+We recomputed Moran's $I$ on the residuals of the new mixed model
+$M_{\mathrm{geo,nested}}$ with the same kNN-5 weights used in the
+previous report. The observed statistic is
+\begin{equation*}
+  I = 0.2351, \quad p < 0.001 \quad (\text{Monte Carlo, 999 permutations}),
+\end{equation*}
+essentially identical to the original $I = 0.2306$ obtained with 191
+covariates. This is reassuring: the spatial residual structure is not
+an artefact of the covariate set, but a genuine feature of the data.
+Replacing 191 indicators with 25 leaves the spatial diagnostic
+unchanged, which means the spatial signal lives at a smaller scale
+than what either feature engineering or feature selection can address.
+
+\subsection{Geographic distribution of residuals}
+
+Figure~\ref{fig:residmap} maps the residuals of the parsimonious
+linear model at the municipality level. Red areas are municipalities
+whose IFC is higher than the 25-covariate model predicts (more
+fragile than expected from their indicators); blue areas are the
+opposite.
+
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=0.7\textwidth]{figures/residual_map.png}
+  \caption{Residuals of the parsimonious 25-covariate linear model
+    averaged across 2019 and 2021. The diverging colour scale is
+    capped at the 1st/99th percentile to keep the map readable.}
+  \label{fig:residmap}
+\end{figure}
+
+Visually, the map shows positive residuals concentrated in the
+deep south (eastern Sicily, the Calabrian Apennines, parts of Apulia
+and Sardinia) and in scattered Alpine valleys, and negative residuals
+along the northern foothills, in the inner Po Valley, and in central
+Italy. This is the same broad north-south pattern that the
+region/province random intercepts of the mixed model formally
+quantify in Section~3.4.
+
+\subsection{All models side by side}
+
+Figure~\ref{fig:comparison} stacks every model evaluated in this and
+the previous report. The full-cov LASSO benchmark and the parsimonious
+mixed-model extension are close enough to be statistically
+indistinguishable.
+
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=0.95\textwidth]{figures/models_comparison_R2.png}
+  \caption{Out-of-fold R² of every model considered, colour-coded by
+    covariate set.}
+  \label{fig:comparison}
+\end{figure}
+
+\section{Comparison with the previous report}
+
+\begin{table}[h!]
+  \centering
+  \begin{tabular}{lcc}
+    \toprule
+    & Previous report & This report \\
+    \midrule
+    Covariate set                          & 191 (LASSO)           & 25 (VIF + ranking + sig.) \\
+    Predictive R²                          & 0.825                 & 0.784 \\
+    LMM extension R² (best)                & 0.853                 & 0.822 \\
+    LMM gain over linear baseline          & $+0.027$              & $+0.038$ \\
+    Moran's $I$ on residuals               & 0.231                 & 0.235 \\
+    Multicollinearity check                & qualitative (PM only) & VIF iterative pruning \\
+    Number of significant predictors       & most                  & all 25 (post-hoc filter) \\
+    Poster readability                     & no                    & yes \\
+    \bottomrule
+  \end{tabular}
+  \caption{Side-by-side comparison of the original benchmark and the
+    parsimonious extension.}
+\end{table}
+
+\section{Conclusion}
+
+The 25-covariate parsimonious model loses only 4.1 percentage points
+of out-of-sample R² compared with the 191-covariate LASSO benchmark,
+and the mixed-model extension recovers all but 0.4 of those points by
+explicitly modelling the region/province nested hierarchy. The
+multicollinearity issue raised by the instructor is addressed
+quantitatively: 34 covariates with VIF~$>$~10 have been pruned, and
+the final model has $\max\mathrm{VIF} = 6.4$. The Elastic Net
+cross-check confirms that the choice of regulariser does not matter
+once the input is VIF-clean. The spatial residual diagnostic is
+unaffected by the change in covariate set, which strengthens the
+case that an explicit spatial model is the natural next step rather
+than further feature engineering. Practically, the 25-covariate model
+is interpretable in a poster and tells a coherent socio-economic
+story: fragility is reduced by the mass of mid-income taxpayers, by
+small-business density across multiple sectors, and by productivity;
+it is increased by the share of low-income taxpayers, by the
+pension share of income, by NO\textsubscript{2} and by population
+aging.
+
+\begin{thebibliography}{9}
+
+\bibitem[Zou \& Hastie(2005)]{zouhastie2005}
+  Zou, H., \& Hastie, T. (2005).
+  Regularization and variable selection via the elastic net.
+  \textit{Journal of the Royal Statistical Society B}, 67(2),
+  301--320.
+
+\bibitem[Tibshirani(1996)]{tibshirani1996}
+  Tibshirani, R. (1996).
+  Regression shrinkage and selection via the lasso. \textit{Journal
+  of the Royal Statistical Society B}, 58(1), 267--288.
+
+\bibitem[Bates et al.(2015)]{bates2015lme4}
+  Bates, D., Mächler, M., Bolker, B., \& Walker, S. (2015).
+  Fitting linear mixed-effects models using \texttt{lme4}.
+  \textit{Journal of Statistical Software}, 67(1), 1--48.
+
+\bibitem[Moran(1950)]{moran1950}
+  Moran, P. A. P. (1950).
+  Notes on continuous stochastic phenomena.
+  \textit{Biometrika}, 37(1/2), 17--23.
+
+\end{thebibliography}
+
+\end{document}
