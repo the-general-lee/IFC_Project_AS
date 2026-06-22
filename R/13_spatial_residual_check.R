@@ -17,61 +17,27 @@
 # ================================================================
 
 suppressPackageStartupMessages({
-  library(readxl); library(dplyr); library(tidyr)
-  library(lme4); library(sf); library(spdep)
+  library(lme4); library(sf); library(spdep); library(dplyr)
 })
+source("R/_utils.R")
 
 set.seed(2026)
 
-ifc_file       <- "data/raw/ifc/final_analysis_sorted.xlsx"
-grins_file     <- "data/processed/grins_v3/comunale_v3.rds"
-tassonomia_file<- "data/raw/grins/tassonomia_grins.xlsx"
-fit_file       <- "outputs/mixed_models/fit_M_geo_nested.rds"
-shape_file     <- "data/raw/istat/shapefile/Com2021.shp"
-out_dir        <- "outputs/mixed_models"
+fit_file   <- "outputs/mixed_models/fit_M_geo_nested.rds"
+shape_file <- "data/raw/istat/shapefile/Com2021.shp"
+out_dir    <- "outputs/mixed_models"
 
-if (!file.exists(fit_file)) {
+if (!file.exists(fit_file))
   stop("Missing LMM fit. Run R/11_mixed_models.R first.")
-}
-if (!file.exists(shape_file)) {
+if (!file.exists(shape_file))
   stop("Missing ISTAT shapefile. See README for download instructions.")
-}
 
 # ================================================================
-# 1) Recompute the data exactly as in script 11 (same FE pipeline)
-#    so we can locate the rows the LMM saw.
+# 1) Recompute the data with the SAME pipeline used by script 11
+#    so we can match rows to the LMM residuals.
 # ================================================================
-ifc_long <- read_excel(ifc_file) %>%
-  select(PRO_COM, IFC_2019, IFC_2021) %>%
-  pivot_longer(c(IFC_2019, IFC_2021), names_to = "year", values_to = "IFC") %>%
-  mutate(year = as.integer(sub("IFC_", "", year)),
-         PRO_COM = as.numeric(PRO_COM)) %>%
-  filter(!is.na(IFC), !is.na(PRO_COM))
-
-grins <- readRDS(grins_file) %>%
-  filter(anno %in% c(2019, 2021)) %>%
-  mutate(codice_comune = as.numeric(codice_comune))
-
-grins_groups <- grins %>%
-  select(codice_comune, anno, nome_regione, nome_provincia)
-
-tassonomia <- read_excel(tassonomia_file, sheet = 1) %>%
-  rename(PRO_COM = 1, GRINS_macroclass = 2, GRINS_class = 3) %>%
-  mutate(PRO_COM = as.numeric(PRO_COM)) %>%
-  filter(!is.na(PRO_COM)) %>%
-  select(PRO_COM, GRINS_macroclass)
-
-num_cols <- setdiff(names(grins)[sapply(grins, is.numeric)],
-                    c("codice_comune", "anno"))
-
-data <- ifc_long %>%
-  inner_join(grins %>% select(all_of(c("codice_comune", "anno", num_cols))),
-             by = c("PRO_COM" = "codice_comune", "year" = "anno")) %>%
-  left_join(grins_groups,
-            by = c("PRO_COM" = "codice_comune", "year" = "anno")) %>%
-  left_join(tassonomia, by = "PRO_COM") %>%
-  filter(!is.na(nome_regione), !is.na(nome_provincia), !is.na(GRINS_macroclass))
-
+prep <- pmu_prepare_data(with_taxonomy_filter = TRUE)
+data <- prep$data
 cat("Rows considered (matches script 11 N):", nrow(data), "\n")
 
 # ================================================================

@@ -24,94 +24,45 @@
 # ================================================================
 
 suppressPackageStartupMessages({
-  library(readxl); library(dplyr); library(tidyr)
-  library(car); library(ggplot2)
+  library(car); library(ggplot2); library(dplyr)
 })
+source("R/_utils.R")
 
 set.seed(2026)
 
-ifc_file       <- "data/raw/ifc/final_analysis_sorted.xlsx"
-grins_file     <- "data/processed/grins_v3/comunale_v3.rds"
-benchmark_coef <- "outputs/final_benchmark/final_coefficients_standardised.csv"
-out_dir        <- "outputs/parsimonious_model"
+out_dir <- "outputs/parsimonious_model"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-if (file.exists(ifc_file)) {
-  tmp <- file.path(tempdir(), "IFC_tmp.xlsx")
-  file.copy(ifc_file, tmp, overwrite = TRUE); ifc_file <- tmp
-}
+# Variables to EXCLUDE upfront on substantive grounds.
+# Superficie_totale is a static geographic feature, not a fragility
+# driver per se. Once the rest of the pipeline uses per-capita
+# densities, it adds no useful information and would confound the
+# interpretation. The instructor explicitly asked to remove it.
+excluded_vars <- c("Superficie_totale_Kmq_formattato",
+                   "Superficie_totale_Kmq_formattato.1",
+                   make.names("Superficie_totale_Kmq_formattato"))
 
 # ================================================================
-# 1) DATA LOADING (same as the benchmark)
+# 1) DATA LOADING + FEATURE ENGINEERING (delegated to R/_utils.R)
 # ================================================================
-ifc_long <- read_excel(ifc_file) %>%
-  select(PRO_COM, IFC_2019, IFC_2021) %>%
-  pivot_longer(c(IFC_2019, IFC_2021), names_to = "year", values_to = "IFC") %>%
-  mutate(year = as.integer(sub("IFC_", "", year)),
-         PRO_COM = as.numeric(PRO_COM)) %>%
-  filter(!is.na(IFC), !is.na(PRO_COM))
-
-grins <- readRDS(grins_file) %>%
-  filter(anno %in% c(2019, 2021)) %>%
-  mutate(codice_comune = as.numeric(codice_comune))
-
-num_cols <- setdiff(names(grins)[sapply(grins, is.numeric)],
-                    c("codice_comune", "anno"))
-
-data <- ifc_long %>%
-  inner_join(grins %>% select(all_of(c("codice_comune", "anno", num_cols))),
-             by = c("PRO_COM" = "codice_comune", "year" = "anno"))
-
-pop <- data$Popolazione
-pop[is.na(pop) | pop <= 0] <- median(pop[pop > 0], na.rm = TRUE)
-y <- data$IFC
+prep <- pmu_prepare_data(with_taxonomy_filter = FALSE)
+data <- prep$data; X_fe <- prep$X_fe; y <- prep$y
 cat("Observations:", length(y), "\n")
 
-# Same FE pipeline
-classify <- function(nm) {
-  ln <- tolower(nm)
-  if (grepl("_anno_x$|_anno_y$|^cod_|^den_|sigla|nome_|^stringa|backcast|recovery|tipo_na", ln)) return("skip")
-  if (ln %in% c("popolazione","superficie_totale_kmq_formattato","superfici kmq")) return("size")
-  rp <- c("indice","incidenza","mobilità","mobilita","percentuale","pro capite","procapite","pro-capite",
-          "per_addetto","per_dipendente","valori_percentuali","_media_","_media$","^eta_","^anzianita_",
-          "media_donne","media_uomini","media_media","coverage","contribuenti_su_pop","reddito_medio",
-          "reddito_pc","lacc_mean","employee_services","employee_concentration","degree_stem",
-          "degree_concentration","^no2_","^pm10_","^pm25_","^o3_","_media_valori_annuali",
-          "distanza_","^elezion","regionali","verde urbano","suolo consumato","acqua potabile",
-          "produzione pro","sau","ricettività","ricettivita","densità")
-  if (any(sapply(rp, function(p) grepl(p, ln)))) return("rate")
-  if (grepl("saldo", ln)) return("count_neg")
-  "count"
-}
-build_X <- function(df_num, pop) {
-  cls <- sapply(names(df_num), classify)
-  keep <- names(df_num)[cls != "skip"]; X <- df_num[, keep]; cls <- cls[keep]
-  na_prop <- sapply(X, function(z) mean(is.na(z)))
-  X <- X[, names(na_prop[na_prop <= 0.20])]; cls <- cls[names(X)]
-  for (j in seq_along(X)) if (any(is.na(X[[j]]))) X[[j]][is.na(X[[j]])] <- median(X[[j]], na.rm = TRUE)
-  for (nm in names(X)) {
-    cc <- cls[nm]
-    if (cc == "count")     { X[[nm]] <- X[[nm]]/pop; X[[nm]][!is.finite(X[[nm]])] <- 0; X[[nm]] <- log1p(pmax(X[[nm]],0)) }
-    else if (cc == "count_neg") { X[[nm]] <- X[[nm]]/pop; X[[nm]][!is.finite(X[[nm]])] <- 0 }
-    else if (cc == "size") { X[[nm]] <- log1p(pmax(X[[nm]],0)) }
-  }
-  wins <- function(z){q <- quantile(z,c(0.01,0.99),na.rm=TRUE); pmin(pmax(z,q[1]),q[2])}
-  X[] <- lapply(X, wins)
-  X[, sapply(X, var) > 0]
-}
-
-X_fe <- build_X(data %>% select(all_of(num_cols)), pop)
-X_fe$year2021 <- as.integer(data$year == 2021)
-names(X_fe) <- make.names(names(X_fe), unique = TRUE)
-
 # Restrict to LASSO-selected predictors (191 from the benchmark)
-sel_df  <- read.csv(benchmark_coef, stringsAsFactors = FALSE)
+# and drop the substantively excluded variables
+sel_df   <- read.csv(PMU_PATHS$benchmark_coef, stringsAsFactors = FALSE)
 selected <- intersect(sel_df$variable, names(X_fe))
+if (any(selected %in% excluded_vars)) {
+  cat("Excluding upfront:",
+      paste(intersect(selected, excluded_vars), collapse = ", "), "\n")
+  selected <- setdiff(selected, excluded_vars)
+}
 cat("Starting from", length(selected), "LASSO-selected predictors\n")
-X_sel <- X_fe[, selected, drop = FALSE]
+X_sel    <- X_fe[, selected, drop = FALSE]
 
 # Standardise so coefficients on this scale are comparable
-X_std <- as.data.frame(scale(as.matrix(X_sel)))
+X_std    <- as.data.frame(scale(as.matrix(X_sel)))
 model_df <- data.frame(IFC = y, PRO_COM = data$PRO_COM, X_std)
 
 # ================================================================
@@ -227,6 +178,34 @@ write.csv(cv_summary,
           file.path(out_dir, "tradeoff_summary.csv"), row.names = FALSE)
 write.csv(cv_records,
           file.path(out_dir, "tradeoff_per_fold.csv"), row.names = FALSE)
+
+# ================================================================
+# 4b) AIC / BIC optimum on the top-N curve
+# ----------------------------------------------------------------
+# In-sample AIC and BIC for each candidate model size. BIC penalises
+# complexity more strongly than AIC and typically suggests smaller
+# models. Reporting the optimum of each is a transparent way to
+# justify the chosen "n_final".
+# ================================================================
+aicbic_curve <- data.frame()
+for (n_top in candidate_n) {
+  top_vars <- ranked$variable[seq_len(n_top)]
+  fit_n <- lm(as.formula(paste("IFC ~", paste(top_vars, collapse = " + "))),
+              data = model_df)
+  aicbic_curve <- rbind(aicbic_curve,
+    data.frame(n_covariates = n_top,
+               AIC = AIC(fit_n), BIC = BIC(fit_n)))
+}
+aicbic_curve <- aicbic_curve %>% arrange(n_covariates)
+cat("\n--- AIC/BIC vs # covariates (in-sample) ---\n")
+print(aicbic_curve, row.names = FALSE, digits = 6)
+write.csv(aicbic_curve,
+          file.path(out_dir, "aicbic_curve.csv"), row.names = FALSE)
+
+best_aic_n <- aicbic_curve$n_covariates[which.min(aicbic_curve$AIC)]
+best_bic_n <- aicbic_curve$n_covariates[which.min(aicbic_curve$BIC)]
+cat(sprintf("Best n by AIC: %d  |  Best n by BIC: %d\n",
+            best_aic_n, best_bic_n))
 
 # ================================================================
 # 5) PICK THE "ELBOW", REFIT, AND ITERATIVELY DROP NON-SIGNIFICANT

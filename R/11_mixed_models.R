@@ -29,145 +29,32 @@
 # ================================================================
 
 suppressPackageStartupMessages({
-  library(readxl);  library(dplyr);  library(tidyr)
-  library(lme4);    library(lmerTest); library(MuMIn)
+  library(lme4); library(lmerTest); library(MuMIn); library(dplyr)
 })
 
 set.seed(2026)
 
-ifc_file       <- "data/raw/ifc/final_analysis_sorted.xlsx"
-grins_file     <- "data/processed/grins_v3/comunale_v3.rds"
-tassonomia_file<- "data/raw/grins/tassonomia_grins.xlsx"
-benchmark_coef        <- "outputs/final_benchmark/final_coefficients_standardised.csv"
-parsimonious_selected <- "outputs/parsimonious_model/selected_parsimonious_variables.txt"
-parsimonious_ranking  <- "outputs/parsimonious_model/vif_clean_ranking.csv"
-n_parsimonious        <- 25         # used only as a fallback if the selected file is missing
-out_dir               <- "outputs/mixed_models"
+source("R/_utils.R")
+
+out_dir <- "outputs/mixed_models"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-# OneDrive placeholder workaround
-if (file.exists(ifc_file)) {
-  tmp <- file.path(tempdir(), "IFC_tmp.xlsx")
-  file.copy(ifc_file, tmp, overwrite = TRUE); ifc_file <- tmp
-}
-
 # ================================================================
-# 1) LOAD IFC + GRINS (same as benchmark)
+# 1-2) DATA LOADING + FEATURE ENGINEERING (delegated to R/_utils.R)
 # ================================================================
-ifc_long <- read_excel(ifc_file) %>%
-  select(PRO_COM, IFC_2019, IFC_2021) %>%
-  pivot_longer(c(IFC_2019, IFC_2021), names_to = "year", values_to = "IFC") %>%
-  mutate(year = as.integer(sub("IFC_", "", year)),
-         PRO_COM = as.numeric(PRO_COM)) %>%
-  filter(!is.na(IFC), !is.na(PRO_COM))
-
-grins <- readRDS(grins_file) %>%
-  filter(anno %in% c(2019, 2021)) %>%
-  mutate(codice_comune = as.numeric(codice_comune))
-
-# Extract grouping variables for random effects
-grins_groups <- grins %>%
-  select(codice_comune, anno, nome_regione, nome_provincia)
-
-# Load GRINS taxonomy for macroclass random effect
-tassonomia <- read_excel(tassonomia_file, sheet = 1) %>%
-  rename(PRO_COM = 1, GRINS_macroclass = 2, GRINS_class = 3) %>%
-  mutate(PRO_COM = as.numeric(PRO_COM)) %>%
-  filter(!is.na(PRO_COM)) %>%
-  select(PRO_COM, GRINS_macroclass)
-
-# Numeric predictors only
-num_cols <- setdiff(names(grins)[sapply(grins, is.numeric)],
-                    c("codice_comune", "anno"))
-
-data <- ifc_long %>%
-  inner_join(grins %>% select(all_of(c("codice_comune", "anno", num_cols))),
-             by = c("PRO_COM" = "codice_comune", "year" = "anno")) %>%
-  left_join(grins_groups,
-            by = c("PRO_COM" = "codice_comune", "year" = "anno")) %>%
-  left_join(tassonomia, by = "PRO_COM") %>%
-  filter(!is.na(nome_regione), !is.na(nome_provincia), !is.na(GRINS_macroclass))
-
+prep <- pmu_prepare_data(with_taxonomy_filter = TRUE)
+data <- prep$data; X_fe <- prep$X_fe; y <- prep$y
 cat("Rows after merge + group filter:", nrow(data), "\n")
 cat("Regions:",    length(unique(data$nome_regione)),
     " | Provinces:", length(unique(data$nome_provincia)),
     " | GRINS macroclasses:", length(unique(data$GRINS_macroclass)), "\n")
-
-pop <- data$Popolazione
-pop[is.na(pop) | pop <= 0] <- median(pop[pop > 0], na.rm = TRUE)
-y <- data$IFC
-
-# ================================================================
-# 2) FEATURE ENGINEERING (identical to benchmark)
-# ================================================================
-classify <- function(nm) {
-  ln <- tolower(nm)
-  if (grepl("_anno_x$|_anno_y$|^cod_|^den_|sigla|nome_|^stringa|backcast|recovery|tipo_na", ln)) return("skip")
-  if (ln %in% c("popolazione", "superficie_totale_kmq_formattato", "superfici kmq")) return("size")
-  rp <- c("indice","incidenza","mobilità","mobilita","percentuale","pro capite","procapite","pro-capite",
-          "per_addetto","per_dipendente","valori_percentuali","_media_","_media$","^eta_","^anzianita_",
-          "media_donne","media_uomini","media_media","coverage","contribuenti_su_pop","reddito_medio",
-          "reddito_pc","lacc_mean","employee_services","employee_concentration","degree_stem",
-          "degree_concentration","^no2_","^pm10_","^pm25_","^o3_","_media_valori_annuali",
-          "distanza_","^elezion","regionali","verde urbano","suolo consumato","acqua potabile",
-          "produzione pro","sau","ricettività","ricettivita","densità")
-  if (any(sapply(rp, function(p) grepl(p, ln)))) return("rate")
-  if (grepl("saldo", ln)) return("count_neg")
-  "count"
-}
-
-build_X <- function(df_num, pop) {
-  cls <- sapply(names(df_num), classify)
-  keep <- names(df_num)[cls != "skip"]; X <- df_num[, keep]; cls <- cls[keep]
-  na_prop <- sapply(X, function(z) mean(is.na(z)))
-  X <- X[, names(na_prop[na_prop <= 0.20])]; cls <- cls[names(X)]
-  for (j in seq_along(X)) if (any(is.na(X[[j]]))) X[[j]][is.na(X[[j]])] <- median(X[[j]], na.rm = TRUE)
-  for (nm in names(X)) {
-    cc <- cls[nm]
-    if (cc == "count") {
-      X[[nm]] <- X[[nm]] / pop; X[[nm]][!is.finite(X[[nm]])] <- 0
-      X[[nm]] <- log1p(pmax(X[[nm]], 0))
-    } else if (cc == "count_neg") {
-      X[[nm]] <- X[[nm]] / pop; X[[nm]][!is.finite(X[[nm]])] <- 0
-    } else if (cc == "size") {
-      X[[nm]] <- log1p(pmax(X[[nm]], 0))
-    }
-  }
-  wins <- function(z) { q <- quantile(z, c(0.01, 0.99), na.rm = TRUE); pmin(pmax(z, q[1]), q[2]) }
-  X[] <- lapply(X, wins)
-  X[, sapply(X, var) > 0]
-}
-
-X_fe <- build_X(data %>% select(all_of(num_cols)), pop)
-X_fe$year2021 <- as.integer(data$year == 2021)
-names(X_fe) <- make.names(names(X_fe), unique = TRUE)
 cat("Feature matrix:", dim(X_fe), "\n")
 
 # ================================================================
-# 3) RESTRICT TO THE LASSO-SELECTED PREDICTORS
-# ----------------------------------------------------------------
-# Fitting lmer on the full 326-column matrix would be slow and would
-# also conflate "is the hierarchy useful?" with "is variable selection
-# useful?". By restricting the fixed-effects design to the predictors
-# that LASSO already kept, we isolate the contribution of the random
-# effects. This is the standard "post-selection" use of LMM.
+# 3) FIXED-EFFECTS SET — parsimonious 25 (with documented fallback)
 # ================================================================
-# Choose the fixed-effects set with the priority described in the header.
-if (file.exists(parsimonious_selected)) {
-  selected <- readLines(parsimonious_selected)
-  selected <- intersect(selected, names(X_fe))
-  cat(sprintf("Predictors loaded from FINAL parsimonious set: %d\n", length(selected)))
-} else if (file.exists(parsimonious_ranking)) {
-  ranking <- read.csv(parsimonious_ranking, stringsAsFactors = FALSE)
-  selected <- intersect(ranking$variable[seq_len(n_parsimonious)], names(X_fe))
-  cat(sprintf("FINAL list missing; using top %d of the VIF-clean ranking: %d\n",
-              n_parsimonious, length(selected)))
-} else {
-  sel_df   <- read.csv(benchmark_coef, stringsAsFactors = FALSE)
-  selected <- intersect(sel_df$variable, names(X_fe))
-  cat("Parsimonious files missing; falling back to LASSO benchmark:",
-      length(selected), "predictors\n")
-}
+selected <- pmu_get_parsimonious_variables(X_fe, n_fallback = 25)
+cat(sprintf("Fixed-effects predictors: %d\n", length(selected)))
 
 X_sel <- X_fe[, selected, drop = FALSE]
 # Standardise predictors so that lmer coefficients are comparable
