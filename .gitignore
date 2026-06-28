@@ -31,6 +31,11 @@ data/raw/istat/shapefile/
 outputs/mixed_models/fit_*.rds
 outputs/mixed_models/shapes_with_residuals.rds
 
+## Stray root-level artefacts from interactive script runs
+/Rplots.pdf
+/Risultati_KMeans_v4.xlsx
+run_all.err
+
 ## LaTeX build artefacts
 reports/**/*.pdf
 reports/**/*.aux
